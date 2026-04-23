@@ -1,16 +1,28 @@
-# This is a sample Python script.
+# train.py
 
-# Press ⌃F5 to execute it or replace it with your code.
-# Press Double ⇧ to search everywhere for classes, files, tool windows, actions, and settings.
-
-
-def print_hi(name):
-    # Use a breakpoint in the code line below to debug your script.
-    print(f'Hi, {name}')  # Press F9 to toggle the breakpoint.
+from src.dataset import load_and_prepare_dataset
+from src.model import get_model
+from src.trainer import train_model
+from utils.logger import setup_logger
 
 
-# Press the green button in the gutter to run the script.
-if __name__ == '__main__':
-    print_hi('PyCharm')
+def main():
+    logger = setup_logger()
 
-# See PyCharm help at https://www.jetbrains.com/help/pycharm/
+    logger.info("Loading dataset...")
+    train_dataset, test_dataset, tokenizer = load_and_prepare_dataset()
+
+    logger.info("Loading model...")
+    model = get_model()
+
+    train_model(
+        model=model,
+        tokenizer=tokenizer,
+        train_dataset=train_dataset,
+        test_dataset=test_dataset,
+        logger=logger
+    )
+
+
+if __name__ == "__main__":
+    main()
