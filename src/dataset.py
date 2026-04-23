@@ -1,7 +1,7 @@
 # dataset.py
 
 from datasets import load_dataset
-from config import TRAIN_SIZE, TEST_SIZE, MODEL_NAME, MAX_LENGTH
+from config.config import TRAIN_SIZE, TEST_SIZE, MODEL_NAME, MAX_LENGTH
 from transformers import AutoTokenizer
 
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
