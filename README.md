@@ -14,6 +14,10 @@ This project includes:
 
 ---
 
+# Demo
+![Sentiment Analysis Demo](sentiment.gif)
+
+
 # Features
 
 ## AI / NLP Features
