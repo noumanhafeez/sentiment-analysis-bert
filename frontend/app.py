@@ -3,19 +3,31 @@
 from fastapi import FastAPI, Form, UploadFile, File
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
+
 from src.prediction import SentimentPredictor
 
 import pandas as pd
 import json
 import io
 import base64
+import matplotlib
+matplotlib.use("Agg")  # ✅ Fix for Docker
 import matplotlib.pyplot as plt
+
+import logging
+
+# -----------------------------------
+# Logging
+# -----------------------------------
+logging.basicConfig(level=logging.INFO)
 
 # -----------------------------------
 # Init App
 # -----------------------------------
 app = FastAPI(title="AI Sentiment Analyzer")
 predictor = SentimentPredictor()
+
+MAX_ROWS = 1000  # ✅ Prevent overload
 
 
 # -----------------------------------
@@ -26,34 +38,69 @@ class TextRequest(BaseModel):
 
 
 # -----------------------------------
+# Health Check
+# -----------------------------------
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+
+# -----------------------------------
 # Helpers
 # -----------------------------------
 def make_chart(labels, values):
-    plt.figure(figsize=(7, 5))
-    plt.pie(
-        values,
-        labels=labels,
-        autopct="%1.1f%%",
-        startangle=90
-    )
-    plt.title("Sentiment Distribution")
+    try:
+        plt.figure(figsize=(7, 5))
+        plt.pie(
+            values,
+            labels=labels,
+            autopct="%1.1f%%",
+            startangle=90
+        )
+        plt.title("Sentiment Distribution")
 
-    img = io.BytesIO()
-    plt.savefig(img, format="png", bbox_inches="tight")
-    plt.close()
-    img.seek(0)
+        img = io.BytesIO()
+        plt.savefig(img, format="png", bbox_inches="tight")
+        plt.close()
+        img.seek(0)
 
-    chart_base64 = base64.b64encode(img.read()).decode()
-    return chart_base64
+        chart_base64 = base64.b64encode(img.read()).decode()
+        return chart_base64
+
+    except Exception as e:
+        logging.error(f"Chart error: {e}")
+        return None
 
 
 def analyze_texts(texts):
+    if not texts:
+        return {
+            "results": [],
+            "total": 0,
+            "positive": 0,
+            "negative": 0,
+            "pos_percent": 0,
+            "neg_percent": 0,
+            "chart": None
+        }
+
     results = []
     positive = 0
     negative = 0
 
+    texts = texts[:MAX_ROWS]  # ✅ Limit size
+
     for text in texts:
-        pred = predictor.predict(str(text))
+        try:
+            pred = predictor.predict(str(text))
+        except Exception as e:
+            logging.error(f"Prediction error: {e}")
+            pred = {
+                "text": str(text),
+                "label": "error",
+                "confidence": 0
+            }
+
         results.append(pred)
 
         if pred["label"].lower() == "positive":
@@ -170,7 +217,11 @@ def home():
 # -----------------------------------
 @app.post("/predict-form", response_class=HTMLResponse)
 def predict_form(text: str = Form(...)):
-    result = predictor.predict(text)
+    try:
+        result = predictor.predict(text)
+    except Exception as e:
+        logging.error(f"Prediction error: {e}")
+        result = {"text": text, "label": "error", "confidence": 0}
 
     return f"""
     <html>
@@ -193,131 +244,80 @@ def predict_form(text: str = Form(...)):
 # -----------------------------------
 @app.post("/upload-file", response_class=HTMLResponse)
 async def upload_file(file: UploadFile = File(...)):
-    filename = file.filename.lower()
-    content = await file.read()
+    try:
+        filename = file.filename.lower()
+        content = await file.read()
 
-    texts = []
+        texts = []
 
-    # CSV
-    if filename.endswith(".csv"):
-        df = pd.read_csv(io.BytesIO(content))
+        if filename.endswith(".csv"):
+            df = pd.read_csv(io.BytesIO(content))
+            texts = df.iloc[:, 0].dropna().astype(str).tolist()
 
-        # first column used
-        texts = df.iloc[:, 0].dropna().astype(str).tolist()
+        elif filename.endswith(".json"):
+            data = json.loads(content.decode())
 
-    # JSON
-    elif filename.endswith(".json"):
-        data = json.loads(content.decode())
+            if isinstance(data, list):
+                texts = [str(item) for item in data]
+            else:
+                texts = [str(data)]
 
-        if isinstance(data, list):
-            for item in data:
-                texts.append(str(item))
+        elif filename.endswith(".txt"):
+            lines = content.decode().splitlines()
+            texts = [line.strip() for line in lines if line.strip()]
+
         else:
-            texts.append(str(data))
+            return "<h1>Unsupported File</h1><a href='/'>Back</a>"
 
-    # TXT
-    elif filename.endswith(".txt"):
-        lines = content.decode().splitlines()
-        texts = [line.strip() for line in lines if line.strip()]
+        report = analyze_texts(texts)
 
-    else:
-        return """
-        <h1>Unsupported File</h1>
-        <a href="/">Back</a>
-        """
+        rows = ""
+        for i, item in enumerate(report["results"][:20], start=1):
+            rows += f"""
+            <tr>
+                <td>{i}</td>
+                <td>{item["text"][:70]}</td>
+                <td>{item["label"]}</td>
+                <td>{item["confidence"]}</td>
+            </tr>
+            """
 
-    report = analyze_texts(texts)
+        chart_html = ""
+        if report["chart"]:
+            chart_html = f'<img src="data:image/png;base64,{report["chart"]}">'
 
-    rows = ""
+        return f"""
+        <html>
+        <body style="font-family:Arial;padding:40px;background:#0f172a;color:white;">
 
-    for i, item in enumerate(report["results"][:20], start=1):
-        rows += f"""
-        <tr>
-            <td>{i}</td>
-            <td>{item["text"][:70]}</td>
-            <td>{item["label"]}</td>
-            <td>{item["confidence"]}</td>
-        </tr>
-        """
+            <h1>📊 Bulk Analysis Report</h1>
 
-    return f"""
-    <html>
-    <head>
-        <style>
-            body{{
-                font-family:Arial;
-                padding:40px;
-                background:#0f172a;
-                color:white;
-            }}
+            <p>Total: {report["total"]}</p>
+            <p>Positive: {report["positive"]} ({report["pos_percent"]}%)</p>
+            <p>Negative: {report["negative"]} ({report["neg_percent"]}%)</p>
 
-            .box{{
-                background:#1e293b;
-                padding:25px;
-                border-radius:18px;
-                margin-bottom:25px;
-            }}
+            {chart_html}
 
-            table{{
-                width:100%;
-                border-collapse:collapse;
-                margin-top:20px;
-            }}
-
-            td,th{{
-                border:1px solid #334155;
-                padding:10px;
-                text-align:left;
-            }}
-
-            th{{
-                background:#334155;
-            }}
-
-            img{{
-                max-width:420px;
-                border-radius:15px;
-                margin-top:15px;
-            }}
-
-            a{{
-                color:#3b82f6;
-            }}
-        </style>
-    </head>
-
-    <body>
-
-        <h1>📊 Bulk Analysis Report</h1>
-
-        <div class="box">
-            <p><b>Total Records:</b> {report["total"]}</p>
-            <p><b>Positive:</b> {report["positive"]} ({report["pos_percent"]}%)</p>
-            <p><b>Negative:</b> {report["negative"]} ({report["neg_percent"]}%)</p>
-
-            <img src="data:image/png;base64,{report["chart"]}">
-        </div>
-
-        <div class="box">
             <h2>Sample Results</h2>
-
-            <table>
+            <table border="1" cellpadding="8">
                 <tr>
                     <th>#</th>
                     <th>Text</th>
                     <th>Label</th>
                     <th>Confidence</th>
                 </tr>
-
                 {rows}
             </table>
-        </div>
 
-        <a href="/">← Back Home</a>
+            <br><a href="/">← Back</a>
 
-    </body>
-    </html>
-    """
+        </body>
+        </html>
+        """
+
+    except Exception as e:
+        logging.error(f"Upload error: {e}")
+        return "<h1>Error processing file</h1><a href='/'>Back</a>"
 
 
 # -----------------------------------
@@ -325,4 +325,8 @@ async def upload_file(file: UploadFile = File(...)):
 # -----------------------------------
 @app.post("/predict")
 def predict_api(request: TextRequest):
-    return predictor.predict(request.text)
+    try:
+        return predictor.predict(request.text)
+    except Exception as e:
+        logging.error(f"API error: {e}")
+        return {"error": "Prediction failed"}
